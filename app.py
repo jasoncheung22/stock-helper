@@ -19,13 +19,14 @@ def fetch_and_calculate_data(ticker_symbol):
         if df.empty:
             return None
             
-        # 1. 技術指標運算
+        # 1. 技術指標運算 (新增 ATR 真實波動幅度)
         df.ta.rsi(length=14, append=True)
         df.ta.macd(append=True)
         df.ta.ema(length=20, append=True)
         df.ta.ema(length=50, append=True)
         df.ta.ema(length=100, append=True)
         df.ta.bbands(length=20, append=True)
+        df.ta.atr(length=14, append=True) # <-- 新增 ATR 指標
         
         # 計算 20 日平均成交量
         df['Vol_MA20'] = df['Volume'].rolling(window=20).mean()
@@ -43,6 +44,7 @@ def fetch_and_calculate_data(ticker_symbol):
         close_price = get_val('Close')
         volume = get_int('Volume')
         vol_ma20 = get_val('Vol_MA20')
+        atr_14 = get_val('ATRr_14') # <-- 獲取最新 ATR
         
         ema20 = get_val('EMA_20')
         ema50 = get_val('EMA_50')
@@ -51,39 +53,63 @@ def fetch_and_calculate_data(ticker_symbol):
         is_ema_bullish = close_price > ema20 > ema50 > ema100
         is_volume_surging = volume > (vol_ma20 * 1.2)
         avg_daily_turnover_usd = vol_ma20 * close_price
+
+        # 2. 基本面數據提取 (Fundamentals)
+        try:
+            info = ticker.info
+            sector = info.get('sector', 'N/A')
+            forward_pe = info.get('forwardPE', 'N/A')
+            if isinstance(forward_pe, (int, float)):
+                forward_pe = round(forward_pe, 2)
+            market_cap_b = round(info.get('marketCap', 0) / 1e9, 2) # 轉換為十億美元 (Billion)
+        except:
+            sector, forward_pe, market_cap_b = 'N/A', 'N/A', 'N/A'
         
-        # 2. 【全新功能】本地端期權大鯨異動掃描
+        # 3. 【全新升級】本地端期權大鯨異動 (Call + Put 雙向監測)
         whale_activity = "未監測到異常大單 (Normal Flow)"
         try:
             options_dates = ticker.options
             if options_dates:
-                # 抓取距離目前最近的期權到期日
                 near_date = options_dates[0] 
                 opt_chain = ticker.option_chain(near_date)
                 calls = opt_chain.calls
+                puts = opt_chain.puts
                 
-                if not calls.empty:
-                    # 大鯨魚篩選標準
-                    unusual_calls = calls[(calls['volume'] > calls['openInterest']) & (calls['volume'] > 1000)]
+                # 計算 PCR (Put/Call Volume Ratio) - 衡量市場恐慌情緒
+                total_call_vol = calls['volume'].sum() if not calls.empty else 1
+                total_put_vol = puts['volume'].sum() if not puts.empty else 0
+                pcr = round(total_put_vol / total_call_vol, 2) if total_call_vol > 0 else "N/A"
+                
+                # 合併篩選大鯨魚 (Call 與 Put 一起抓)
+                unusual_calls = calls[(calls['volume'] > calls['openInterest']) & (calls['volume'] > 1000)].copy()
+                unusual_puts = puts[(puts['volume'] > puts['openInterest']) & (puts['volume'] > 1000)].copy()
+                
+                if not unusual_calls.empty or not unusual_puts.empty:
+                    if not unusual_calls.empty: unusual_calls['type'] = 'Call (看漲)'
+                    if not unusual_puts.empty: unusual_puts['type'] = 'Put (看跌/避險)'
                     
-                    if not unusual_calls.empty:
-                        top_whale = unusual_calls.sort_values(by='volume', ascending=False).iloc[0]
-                        whale_activity = f"發現機構大鯨！到期日: {near_date} | 行權價: ${top_whale['strike']} Call | 今日成交: {int(top_whale['volume'])}口 > 未平倉: {int(top_whale['openInterest'])}口 (多頭強力開倉)"
-                    else:
-                        top_vol_call = calls.sort_values(by='volume', ascending=False).iloc[0]
-                        whale_activity = f"焦點期權流：到期日: {near_date} | 行權價: ${top_vol_call['strike']} Call | 當日最大成交量: {int(top_vol_call['volume'])}口"
+                    all_unusual = pd.concat([unusual_calls, unusual_puts])
+                    # 找出當天成交量最誇張的那一口合約
+                    top_whale = all_unusual.sort_values(by='volume', ascending=False).iloc[0]
+                    whale_activity = f"🚨 發現大鯨！到期日: {near_date} | 行權價: ${top_whale['strike']} {top_whale['type']} | 今日成交: {int(top_whale['volume'])}口 > 未平倉: {int(top_whale['openInterest'])}口 (PCR比率: {pcr})"
+                else:
+                    whale_activity = f"期權流穩健 (當日短線 Put/Call Ratio: {pcr})"
         except Exception as opt_e:
-            whale_activity = f"期權數據暫缺 (原因: {str(opt_e)})"
+            whale_activity = f"期權數據暫缺"
 
-        # 3. 封裝市場數據
+        # 4. 封裝市場數據 (增加給 AI 的決策參數)
         market_facts = {
             "Ticker": ticker_symbol.upper(),
             "Date": latest_data.name.strftime("%Y-%m-%d"),
+            "Sector": sector,                      # <-- 新增板塊
+            "Market_Cap_Billion": market_cap_b,    # <-- 新增市值
+            "Forward_PE": forward_pe,              # <-- 新增前瞻本益比
             "Close_Price": close_price,
             "Volume": volume,
             "Avg_Volume_20D": int(vol_ma20),
             "Volume_Surge": "Yes" if is_volume_surging else "No",
             "Avg_Daily_Turnover_USD": f"{round(avg_daily_turnover_usd / 1000000, 2)}M",
+            "ATR_14": atr_14,                      # <-- 新增 ATR，用於精確計算止損
             "RSI_14": get_val('RSI_14'),
             "MACD_Histogram": get_val('MACDh_12_26_9'),
             "MACD_Trend": "Golden Cross" if get_val('MACDh_12_26_9') > 0 else "Death Cross",
@@ -108,7 +134,6 @@ def generate_ai_prompt(mode, data_payload):
         【模式：1️⃣ 潛力美股單股深度分析】
         請根據下方 JSON 數據，生成一份極簡的 Markdown 報告。
         必須包含：潛力爆發分數(1-100)、基本面與催化劑、技術指標狀態、期權大鯨異動解析、操作建議（買入區/目標價/止損價/風報比）。
-        並在表格下方附上 Investing.com, AASTOCKS, TradingView, Barchart 的驗證連結。
         
         【絕對市場數據】：
         {json.dumps(data_payload, indent=2, ensure_ascii=False)}
@@ -118,7 +143,6 @@ def generate_ai_prompt(mode, data_payload):
         【模式：2️⃣ Top 5 潛力美股雷達全市場掃描】
         請根據下方由 Python 篩選並提供的前 5 名潛力股 JSON 數據，生成匯總排名的 Markdown 表格。
         必須包含欄位：排名、股票代號、潛力分數、技術指標與觸發信號、期權大鯨異動、基本面與催化劑、操作建議。
-        並在表格下方附上相關數據來源的驗證連結。
         
         【Top 5 絕對市場數據清單】：
         {json.dumps(data_payload, indent=2, ensure_ascii=False)}
