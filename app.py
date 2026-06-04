@@ -3,7 +3,11 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta_classic as ta
 import json
+import requests
 from datetime import datetime
+
+def get_nasdaq100_tickers():
+    return ["AAPL", "ABNB", "ADBE", "ADI", "ADP", "ADSK", "AEP", "ALGN", "AMAT", "AMD", "AMGN", "AMZN", "ANSS", "ASML", "AVGO", "AZN", "BIIB", "BKNG", "BKR", "CCEP", "CDNS", "CDW", "CEG", "CHTR", "CMCSA", "COST", "CPRT", "CRWD", "CSCO", "CSGP", "CSX", "CTAS", "CTSH", "DDOG", "DLTR", "DXCM", "EA", "EBAY", "ENPH", "EXC", "FANG", "FAST", "FTNT", "GEHC", "GILD", "GOOG", "GOOGL", "HON", "IDXX", "ILMN", "INTC", "INTU", "ISRG", "KDP", "KHC", "KLAC", "LRCX", "LULU", "MAR", "MCHP", "MDLZ", "MELI", "META", "MNST", "MRNA", "MRVL", "MSFT", "MU", "NFLX", "NTES", "NVDA", "NXPI", "ODFL", "ON", "ORLY", "PANW", "PAYX", "PCAR", "PDD", "PEP", "PYPL", "QCOM", "REGN", "ROP", "ROST", "SBUX", "SIRI", "SNPS", "SPLK", "TEAM", "TMUS", "TSLA", "TTWO", "TXN", "VRSK", "VRTX", "WBA", "WBD", "WDAY", "XEL", "ZS"]
 
 # ==========================================
 # 核心邏輯 (從原本的 main.py 搬過來)
@@ -62,8 +66,12 @@ def fetch_and_calculate_data(ticker_symbol):
             if isinstance(forward_pe, (int, float)):
                 forward_pe = round(forward_pe, 2)
             market_cap_b = round(info.get('marketCap', 0) / 1e9, 2) # 轉換為十億美元 (Billion)
+            current_price = info.get('currentPrice', close_price)
+            previous_close = info.get('previousClose', round(float(df.iloc[-2]['Close']), 2) if len(df) > 1 else close_price)
         except:
             sector, forward_pe, market_cap_b = 'N/A', 'N/A', 'N/A'
+            current_price = close_price
+            previous_close = round(float(df.iloc[-2]['Close']), 2) if len(df) > 1 else close_price
         
         # 3. 【全新升級】本地端期權大鯨異動 (Call + Put 雙向監測)
         whale_activity = "未監測到異常大單 (Normal Flow)"
@@ -104,7 +112,8 @@ def fetch_and_calculate_data(ticker_symbol):
             "Sector": sector,                      # <-- 新增板塊
             "Market_Cap_Billion": market_cap_b,    # <-- 新增市值
             "Forward_PE": forward_pe,              # <-- 新增前瞻本益比
-            "Close_Price": close_price,
+            "Close_Price": previous_close,
+            "Current_Price": current_price,
             "Volume": volume,
             "Avg_Volume_20D": int(vol_ma20),
             "Volume_Surge": "Yes" if is_volume_surging else "No",
@@ -123,6 +132,67 @@ def fetch_and_calculate_data(ticker_symbol):
     except Exception as e:
         return {"Error": f"Error fetching data for {ticker_symbol}: {e}"}
 
+@st.cache_data(ttl=3600)
+def fetch_late_day_surge(ticker_symbol):
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        df = ticker.history(period="5d", interval="5m")
+        if df.empty:
+            return None
+        
+        if df.index.tz is None:
+            df.index = df.index.tz_localize('UTC').tz_convert('America/New_York')
+        else:
+            df.index = df.index.tz_convert('America/New_York')
+            
+        df['Date'] = df.index.date
+        dates = df['Date'].unique()
+        if len(dates) < 1:
+            return None
+            
+        target_date = dates[-1]
+        day_df = df[df['Date'] == target_date]
+        
+        # 若最後一筆不到 15:30，取前一天
+        if day_df.index[-1].time() < pd.to_datetime("15:30").time() and len(dates) > 1:
+            target_date = dates[-2]
+            day_df = df[df['Date'] == target_date]
+            
+        avg_vol = day_df['Volume'].mean()
+        late_day_df = day_df.between_time("15:30", "16:00")
+        
+        if late_day_df.empty:
+            return None
+            
+        max_vol_row = late_day_df.loc[late_day_df['Volume'].idxmax()]
+        max_vol = max_vol_row['Volume']
+        surge_multiplier = max_vol / avg_vol if avg_vol > 0 else 0
+        direction = "Buy (買盤)" if max_vol_row['Close'] >= max_vol_row['Open'] else "Sell (賣盤)"
+        
+        try:
+            info = ticker.info
+            sector = info.get('sector', 'N/A')
+            market_cap_b = round(info.get('marketCap', 0) / 1e9, 2)
+            current_price = info.get('currentPrice', round(float(day_df.iloc[-1]['Close']), 2))
+        except:
+            sector, market_cap_b, current_price = 'N/A', 'N/A', round(float(day_df.iloc[-1]['Close']), 2)
+
+        return {
+            "Ticker": ticker_symbol.upper(),
+            "Date": str(target_date),
+            "Sector": sector,
+            "Market_Cap_Billion": market_cap_b,
+            "Current_Price": current_price,
+            "Surge_Time": max_vol_row.name.strftime("%H:%M"),
+            "Surge_Volume": int(max_vol),
+            "Avg_5m_Volume": int(avg_vol),
+            "Surge_Multiplier": round(surge_multiplier, 1),
+            "Direction": direction,
+            "Surge_Price_Change": f"{round((max_vol_row['Close'] - max_vol_row['Open']) / max_vol_row['Open'] * 100, 2)}%"
+        }
+    except Exception as e:
+        return {"Error": f"Error fetching {ticker_symbol}: {e}"}
+
 def generate_ai_prompt(mode, data_payload):
     system_prompt = """
     你是一個資深的股票經紀與量化分析師。你不允許股價有任何一絲差錯。
@@ -138,13 +208,22 @@ def generate_ai_prompt(mode, data_payload):
         【絕對市場數據】：
         {json.dumps(data_payload, indent=2, ensure_ascii=False)}
         """
-    else:
+    elif mode == 2:
         user_prompt = f"""
         【模式：2️⃣ Top 5 潛力美股雷達全市場掃描】
         請根據下方由 Python 篩選並提供的前 5 名潛力股 JSON 數據，生成匯總排名的 Markdown 表格。
         必須包含欄位：排名、股票代號、潛力分數、技術指標與觸發信號、期權大鯨異動、基本面與催化劑、操作建議。
         
         【Top 5 絕對市場數據清單】：
+        {json.dumps(data_payload, indent=2, ensure_ascii=False)}
+        """
+    else:
+        user_prompt = f"""
+        【模式：3️⃣ 收市前大額買賣異動分析】
+        請根據下方由 Python 篩選並提供的前一日（或最近交易日）收市前發生大額買賣異動的股票數據，生成一份重點解析報告。
+        請指出這些大額買賣可能代表的機構意圖（例如：主力建倉、出貨、或是對沖），並針對這幾檔股票給出短線操作建議。
+        
+        【尾盤異動數據清單】：
         {json.dumps(data_payload, indent=2, ensure_ascii=False)}
         """
         
@@ -160,7 +239,7 @@ st.set_page_config(page_title="AI 股票量化分析 Prompt 產生器", page_ico
 st.title("📈 AI 股票量化分析 Prompt 產生器")
 st.markdown("這個工具可以幫你自動抓取最新的美股數據、計算技術指標 (RSI, MACD, 均線)，並產生可直接丟給 ChatGPT / Gemini 的精確 Prompt！")
 
-tab1, tab2 = st.tabs(["1️⃣ 單股深度分析", "2️⃣ Top 5 雷達掃描"])
+tab1, tab2, tab3 = st.tabs(["1️⃣ 單股深度分析", "2️⃣ Top 5 雷達掃描", "3️⃣ 收市前大額買賣掃描"])
 
 # --- Mode 1: 單股深度分析 ---
 with tab1:
@@ -191,12 +270,23 @@ with tab2:
     st.header("Top 5 潛力股雷達掃描")
     st.markdown("程式會自動計算所有列表中的股票，並過濾出 **日均成交額 > 4億** 且 **MACD金叉** 且 **均線多頭排列** 的股票，列出最強的前五名。")
     
-    default_watchlist = "AAPL, NVDA, TSLA, AMD, AVGO, MSFT, AMZN, PLTR, SNOW, META"
-    watchlist_input = st.text_area("請輸入觀察清單 (用逗號分隔)", value=default_watchlist, height=100)
-    btn_mode2 = st.button("開始掃描並產生 Prompt", type="primary", key="btn2")
+    scan_scope_2 = st.radio("請選擇掃描範圍 (掃描全市場需要約 1~2 分鐘，請耐心等候)：", 
+                          options=["🚀 NASDAQ 100 成份股 (100檔)", "✍️ 自訂觀察清單"],
+                          index=0, horizontal=True, key="scope_2")
+                          
+    if scan_scope_2 == "✍️ 自訂觀察清單":
+        default_watchlist_2 = "AAPL, NVDA, TSLA, AMD, AVGO, MSFT, AMZN, PLTR, SNOW, META"
+        watchlist_input_2 = st.text_area("請輸入觀察清單 (用逗號分隔)", value=default_watchlist_2, height=100, key="wl2")
+    else:
+        watchlist_input_2 = ""
+        
+    btn_mode2 = st.button("🚀 開始全範圍掃描並產生 Prompt", type="primary", key="btn2")
     
     if btn_mode2:
-        watch_list = [x.strip().upper() for x in watchlist_input.split(",") if x.strip()]
+        if scan_scope_2 == "🚀 NASDAQ 100 成份股 (100檔)":
+            watch_list = get_nasdaq100_tickers()
+        else:
+            watch_list = [x.strip().upper() for x in watchlist_input_2.split(",") if x.strip()]
         
         if not watch_list:
             st.warning("請至少輸入一檔股票代號！")
@@ -238,3 +328,58 @@ with tab2:
                 st.code(prompt, language="markdown")
             else:
                 st.warning("當前觀察清單中沒有股票完全符合「日均成交額>4億 + MACD金叉 + 均線多頭排列」的硬性篩選條件！")
+
+# --- Mode 3: 收市前大額買賣掃描 ---
+with tab3:
+    st.header("收市前大額買賣 (尾盤異動) 掃描")
+    st.markdown("掃描最近一個交易日 **15:30 - 16:00 (美東時間)** 之間的 5 分鐘 K 線，找出尾盤成交量暴增的股票（機構主力進出訊號）。")
+    
+    scan_scope = st.radio("請選擇掃描範圍 (掃描全市場需要約 1~2 分鐘，請耐心等候)：", 
+                          options=["🚀 NASDAQ 100 成份股 (100檔)", "✍️ 自訂觀察清單"],
+                          index=0, horizontal=True)
+                          
+    if scan_scope == "✍️ 自訂觀察清單":
+        default_watchlist_3 = "AAPL, NVDA, TSLA, AMD, AVGO, MSFT, AMZN, PLTR, SNOW, META, GME, AMC"
+        watchlist_input_3 = st.text_area("請輸入觀察清單 (用逗號分隔)", value=default_watchlist_3, height=100, key="wl3")
+    else:
+        watchlist_input_3 = ""
+        
+    btn_mode3 = st.button("🚀 開始全範圍掃描並產生 Prompt", type="primary", key="btn3")
+    
+    if btn_mode3:
+        if scan_scope == "🚀 NASDAQ 100 成份股 (100檔)":
+            watch_list_3 = get_nasdaq100_tickers()
+        else:
+            watch_list_3 = [x.strip().upper() for x in watchlist_input_3.split(",") if x.strip()]
+        
+        if not watch_list_3:
+            st.warning("股票清單為空！")
+        else:
+            all_surge_stocks = []
+            progress_bar_3 = st.progress(0)
+            status_text_3 = st.empty()
+            
+            for i, ticker in enumerate(watch_list_3):
+                status_text_3.text(f"正在擷取 {ticker} 的分時數據 ({i+1}/{len(watch_list_3)})...")
+                facts = fetch_late_day_surge(ticker)
+                if facts and "Error" not in facts:
+                    # 篩選條件：尾盤最大成交量至少是全日 5 分鐘平均的 2.5 倍
+                    if facts.get("Surge_Multiplier", 0) >= 2.5:
+                        all_surge_stocks.append(facts)
+                progress_bar_3.progress((i + 1) / len(watch_list_3))
+                
+            status_text_3.text("分析完成！")
+            
+            # 按爆發倍數排序，選出最強的 10 檔
+            top_surge_stocks = sorted(all_surge_stocks, key=lambda x: x.get("Surge_Multiplier", 0), reverse=True)[:10]
+            
+            status_text_3.empty()
+            progress_bar_3.empty()
+            
+            if top_surge_stocks:
+                prompt = generate_ai_prompt(3, top_surge_stocks)
+                st.success(f"掃描完成！從 {len(watch_list_3)} 檔中篩選出 {len(top_surge_stocks)} 檔出現尾盤大額異動的股票。請點擊複製並貼給 AI。")
+                st.code(prompt, language="markdown")
+                st.dataframe(top_surge_stocks)
+            else:
+                st.warning("當前掃描範圍中沒有股票在尾盤出現明顯的大額異動 (單根5分鐘K線成交量 > 全日平均 2.5 倍)！")
