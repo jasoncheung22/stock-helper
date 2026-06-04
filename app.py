@@ -7,7 +7,10 @@ import requests
 from datetime import datetime
 
 def get_nasdaq100_tickers():
-    return ["AAPL", "ABNB", "ADBE", "ADI", "ADP", "ADSK", "AEP", "ALGN", "AMAT", "AMD", "AMGN", "AMZN", "ANSS", "ASML", "AVGO", "AZN", "BIIB", "BKNG", "BKR", "CCEP", "CDNS", "CDW", "CEG", "CHTR", "CMCSA", "COST", "CPRT", "CRWD", "CSCO", "CSGP", "CSX", "CTAS", "CTSH", "DDOG", "DLTR", "DXCM", "EA", "EBAY", "ENPH", "EXC", "FANG", "FAST", "FTNT", "GEHC", "GILD", "GOOG", "GOOGL", "HON", "IDXX", "ILMN", "INTC", "INTU", "ISRG", "KDP", "KHC", "KLAC", "LRCX", "LULU", "MAR", "MCHP", "MDLZ", "MELI", "META", "MNST", "MRNA", "MRVL", "MSFT", "MU", "NFLX", "NTES", "NVDA", "NXPI", "ODFL", "ON", "ORLY", "PANW", "PAYX", "PCAR", "PDD", "PEP", "PYPL", "QCOM", "REGN", "ROP", "ROST", "SBUX", "SIRI", "SNPS", "SPLK", "TEAM", "TMUS", "TSLA", "TTWO", "TXN", "VRSK", "VRTX", "WBA", "WBD", "WDAY", "XEL", "ZS"]
+    return ["AAPL", "ABNB", "ADBE", "ADI", "ADP", "ADSK", "AEP", "ALGN", "ALNY", "AMAT", "AMD", "AMGN", "AMZN", "ASML", "AVGO", "AZN", "BKNG", "BKR", "CCEP", "CDNS", "CEG", "CHTR", "CMCSA", "COST", "CPRT", "CRWD", "CSCO", "CSGP", "CSX", "CTAS", "CTSH", "DASH", "DDOG", "DLTR", "DXCM", "EA", "EBAY", "ENPH", "EXC", "FANG", "FAST", "FER", "FTNT", "GEHC", "GILD", "GOOG", "GOOGL", "HON", "IDXX", "ILMN", "INSM", "INTC", "INTU", "ISRG", "KDP", "KHC", "KLAC", "LRCX", "MAR", "MCHP", "MDLZ", "MELI", "META", "MNST", "MPWR", "MRNA", "MRVL", "MSFT", "MU", "NFLX", "NTES", "NVDA", "NXPI", "ODFL", "ORLY", "PANW", "PAYX", "PCAR", "PDD", "PEP", "PYPL", "QCOM", "REGN", "ROP", "ROST", "SBUX", "SIRI", "SNPS", "STX", "TEAM", "TMUS", "TSLA", "TTWO", "TXN", "VRSK", "VRTX", "WBD", "WDC", "WDAY", "XEL", "ZS"]
+
+def get_dow30_tickers():
+    return ["AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS", "DOW", "GS", "HD", "HON", "IBM", "INTC", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK", "MSFT", "NKE", "PG", "TRV", "UNH", "V", "VZ", "WMT"]
 
 # ==========================================
 # 核心邏輯 (從原本的 main.py 搬過來)
@@ -271,7 +274,7 @@ with tab2:
     st.markdown("程式會自動計算所有列表中的股票，並過濾出 **日均成交額 > 4億** 且 **MACD金叉** 且 **均線多頭排列** 的股票，列出最強的前五名。")
     
     scan_scope_2 = st.radio("請選擇掃描範圍 (掃描全市場需要約 1~2 分鐘，請耐心等候)：", 
-                          options=["🚀 NASDAQ 100 成份股 (100檔)", "✍️ 自訂觀察清單"],
+                          options=["🔥 NASDAQ 100 + Dow 30 (綜合掃描)", "✍️ 自訂觀察清單"],
                           index=0, horizontal=True, key="scope_2")
                           
     if scan_scope_2 == "✍️ 自訂觀察清單":
@@ -283,8 +286,8 @@ with tab2:
     btn_mode2 = st.button("🚀 開始全範圍掃描並產生 Prompt", type="primary", key="btn2")
     
     if btn_mode2:
-        if scan_scope_2 == "🚀 NASDAQ 100 成份股 (100檔)":
-            watch_list = get_nasdaq100_tickers()
+        if scan_scope_2 == "🔥 NASDAQ 100 + Dow 30 (綜合掃描)":
+            watch_list = list(set(get_nasdaq100_tickers() + get_dow30_tickers()))
         else:
             watch_list = [x.strip().upper() for x in watchlist_input_2.split(",") if x.strip()]
         
@@ -335,7 +338,7 @@ with tab3:
     st.markdown("掃描最近一個交易日 **15:30 - 16:00 (美東時間)** 之間的 5 分鐘 K 線，找出尾盤成交量暴增的股票（機構主力進出訊號）。")
     
     scan_scope = st.radio("請選擇掃描範圍 (掃描全市場需要約 1~2 分鐘，請耐心等候)：", 
-                          options=["🚀 NASDAQ 100 成份股 (100檔)", "✍️ 自訂觀察清單"],
+                          options=["🔥 NASDAQ 100 + Dow 30 (綜合掃描)", "✍️ 自訂觀察清單"],
                           index=0, horizontal=True)
                           
     if scan_scope == "✍️ 自訂觀察清單":
@@ -347,8 +350,8 @@ with tab3:
     btn_mode3 = st.button("🚀 開始全範圍掃描並產生 Prompt", type="primary", key="btn3")
     
     if btn_mode3:
-        if scan_scope == "🚀 NASDAQ 100 成份股 (100檔)":
-            watch_list_3 = get_nasdaq100_tickers()
+        if scan_scope == "🔥 NASDAQ 100 + Dow 30 (綜合掃描)":
+            watch_list_3 = list(set(get_nasdaq100_tickers() + get_dow30_tickers()))
         else:
             watch_list_3 = [x.strip().upper() for x in watchlist_input_3.split(",") if x.strip()]
         
